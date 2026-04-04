@@ -82,6 +82,7 @@ For a streaming request:
 - Auth can be provided through `x-api-key` or `Authorization: Bearer ...`.
 - The response includes `x-acp-session-id` on successful message requests.
 - Model IDs are backend-dependent. The facade can also alias client-facing IDs to backend IDs where needed.
+- For streaming responses, `message_start.usage` is a provisional estimate (to avoid zero-token clients); the authoritative usage comes in the final `message_delta` event.
 
 Current built-in aliases:
 

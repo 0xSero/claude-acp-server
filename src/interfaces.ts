@@ -9,6 +9,7 @@ import type { MessageCreateParamsBase } from "@anthropic-ai/sdk/resources/messag
 import type { ModelInfo } from "@anthropic-ai/sdk/resources/models";
 import type { RawMessageStreamEvent } from "@anthropic-ai/sdk/resources/messages/messages";
 import type { FinalizedAnthropicTurn, PromptExecutionOptions, RunningServer } from "./types.js";
+import type { ProvisionalStreamUsage } from "./helpers/messages.js";
 
 export interface Logger {
   log: (...args: unknown[]) => void;
@@ -50,6 +51,7 @@ export interface PromptTranslator {
     sessionId: string;
     model: string;
     enableToolBridge: boolean;
+    initialUsage: ProvisionalStreamUsage;
   }): {
     start: () => RawMessageStreamEvent;
     pushNotification: (notification: SessionNotification) => RawMessageStreamEvent[];
@@ -60,6 +62,7 @@ export interface PromptTranslator {
     sessionId: string;
     model: string;
     enableToolBridge: boolean;
+    initialUsage: ProvisionalStreamUsage;
     response: PromptResponse;
     notifications: SessionNotification[];
   }): FinalizedAnthropicTurn;

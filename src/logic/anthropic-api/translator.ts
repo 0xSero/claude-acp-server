@@ -11,6 +11,7 @@ import {
   TOOL_USE_BRIDGE_END,
   TOOL_USE_BRIDGE_START,
   anthropicRequestToPromptRequest,
+  type ProvisionalStreamUsage,
   parseBridgedToolUse,
   toAnthropicToolUseBlock,
 } from "../../helpers/messages.js";
@@ -36,16 +37,7 @@ function mapStopReason(stopReason: PromptResponse["stopReason"]): Message["stop_
 }
 
 class AnthropicStreamCollector {
-  private readonly usage: Message["usage"] = {
-    cache_creation: null,
-    cache_creation_input_tokens: null,
-    cache_read_input_tokens: null,
-    inference_geo: null,
-    input_tokens: 0,
-    output_tokens: 0,
-    server_tool_use: null,
-    service_tier: null,
-  };
+  private readonly usage: Message["usage"];
   private readonly content: Message["content"] = [];
   private readonly streamEvents: RawMessageStreamEvent[] = [];
   private readonly messageId = newMessageId();
@@ -60,7 +52,19 @@ class AnthropicStreamCollector {
     private readonly sessionId: string,
     private readonly model: string,
     private readonly enableToolBridge: boolean,
-  ) {}
+    initialUsage: ProvisionalStreamUsage,
+  ) {
+    this.usage = {
+      cache_creation: null,
+      cache_creation_input_tokens: initialUsage.cache_creation_input_tokens,
+      cache_read_input_tokens: initialUsage.cache_read_input_tokens,
+      inference_geo: null,
+      input_tokens: initialUsage.input_tokens,
+      output_tokens: 0,
+      server_tool_use: null,
+      service_tier: null,
+    };
+  }
 
   start(): RawMessageStreamEvent {
     const event: RawMessageStreamEvent = {
@@ -323,12 +327,14 @@ export class AnthropicPromptTranslator implements PromptTranslator {
     sessionId: string;
     model: string;
     enableToolBridge: boolean;
+    initialUsage: ProvisionalStreamUsage;
   }) {
     return new AnthropicStreamCollector(
       args.requestId,
       args.sessionId,
       args.model,
       args.enableToolBridge,
+      args.initialUsage,
     );
   }
 
@@ -337,6 +343,7 @@ export class AnthropicPromptTranslator implements PromptTranslator {
     sessionId: string;
     model: string;
     enableToolBridge: boolean;
+    initialUsage: ProvisionalStreamUsage;
     response: PromptResponse;
     notifications: SessionNotification[];
   }) {
@@ -345,6 +352,7 @@ export class AnthropicPromptTranslator implements PromptTranslator {
       sessionId: args.sessionId,
       model: args.model,
       enableToolBridge: args.enableToolBridge,
+      initialUsage: args.initialUsage,
     });
     collector.start();
     for (const notification of args.notifications) {

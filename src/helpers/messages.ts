@@ -17,6 +17,12 @@ export type BridgedToolUse = {
   input: unknown;
 };
 
+export type ProvisionalStreamUsage = {
+  input_tokens: number;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
+};
+
 function normalizeMessageContent(content: MessageParam["content"]): ContentBlockParam[] {
   if (typeof content === "string") {
     return [{ type: "text", text: content }];
@@ -57,6 +63,75 @@ function normalizeClientTools(request: MessageCreateParamsBase): ToolUnion[] {
   return request.tools.filter((tool): tool is ToolUnion => {
     return typeof tool === "object" && tool !== null && "name" in tool;
   });
+}
+
+function estimateTokensFromText(text: string): number {
+  const trimmed = text.trim();
+  if (!trimmed.length) {
+    return 0;
+  }
+
+  // Fast heuristic for start-of-stream compatibility when upstream ACP usage
+  // is only available at turn completion.
+  return Math.max(1, Math.ceil(trimmed.length / 4));
+}
+
+function renderSystemForEstimate(system: MessageCreateParamsBase["system"]): string {
+  if (typeof system === "string") {
+    return system;
+  }
+
+  if (!Array.isArray(system)) {
+    return "";
+  }
+
+  return system.map((block) => ("text" in block ? block.text : "[system block]")).join("\n");
+}
+
+export function estimateProvisionalStreamUsage(args: {
+  request: MessageCreateParamsBase;
+  hasPriorSession: boolean;
+}): ProvisionalStreamUsage {
+  const fragments: string[] = [];
+  const { request } = args;
+
+  const systemText = renderSystemForEstimate(request.system);
+  if (systemText.trim().length) {
+    fragments.push(systemText);
+  }
+
+  for (const message of request.messages) {
+    fragments.push(messageToTranscriptLine(message));
+  }
+
+  for (const tool of normalizeClientTools(request)) {
+    const descriptor: Record<string, unknown> = { name: tool.name };
+    if ("description" in tool && typeof tool.description === "string") {
+      descriptor.description = tool.description;
+    }
+    if ("input_schema" in tool) {
+      descriptor.input_schema = tool.input_schema;
+    }
+    fragments.push(JSON.stringify(descriptor));
+  }
+
+  const estimatedTotal = estimateTokensFromText(fragments.join("\n\n"));
+  if (!estimatedTotal) {
+    return {
+      input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    };
+  }
+
+  const uncached = Math.max(1, Math.min(16, estimatedTotal));
+  const cached = Math.max(0, estimatedTotal - uncached);
+
+  return {
+    input_tokens: uncached,
+    cache_creation_input_tokens: args.hasPriorSession ? 0 : cached,
+    cache_read_input_tokens: args.hasPriorSession ? cached : 0,
+  };
 }
 
 function renderToolChoice(choice: ToolChoice | undefined): string | null {

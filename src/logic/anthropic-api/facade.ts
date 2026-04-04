@@ -10,7 +10,7 @@ import type {
   RawMessageStreamEvent,
 } from "@anthropic-ai/sdk/resources/messages/messages";
 import { HttpError, requireAnthropicHeaders } from "../../helpers/errors.js";
-import { shouldEnableToolBridge } from "../../helpers/messages.js";
+import { estimateProvisionalStreamUsage, shouldEnableToolBridge } from "../../helpers/messages.js";
 import type { FinalizedAnthropicTurn, ServerConfig } from "../../types.js";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
 
@@ -38,13 +38,17 @@ export class AnthropicAcpFacade implements AnthropicFacade {
   ): Promise<FinalizedAnthropicTurn> {
     requireAnthropicHeaders(headers, this.config.anthropicVersion, this.config.apiKey);
 
-    const ensured = await this.backend.ensureSession(
-      headers.get(this.config.sessionHeader) ?? undefined,
-    );
+    const requestedSessionId = headers.get(this.config.sessionHeader) ?? undefined;
+    const hasPriorSession = Boolean(requestedSessionId?.trim());
+    const ensured = await this.backend.ensureSession(requestedSessionId);
     const sessionId = ensured.sessionId;
     const requestedModel = body.model;
     const backendModel = MODEL_ALIASES[requestedModel] ?? requestedModel;
     const enableToolBridge = shouldEnableToolBridge(body);
+    const initialUsage = estimateProvisionalStreamUsage({
+      request: body,
+      hasPriorSession,
+    });
 
     if (ensured.models?.availableModels?.length) {
       const knownModelIds = new Set(ensured.models.availableModels.map((entry) => entry.modelId));
@@ -67,6 +71,7 @@ export class AnthropicAcpFacade implements AnthropicFacade {
       sessionId,
       model: requestedModel,
       enableToolBridge,
+      initialUsage,
     });
     let emittedStreamEventCount = 0;
 
@@ -105,6 +110,7 @@ export class AnthropicAcpFacade implements AnthropicFacade {
       sessionId,
       model: requestedModel,
       enableToolBridge,
+      initialUsage,
       response,
       notifications,
     });

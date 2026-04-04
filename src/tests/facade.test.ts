@@ -119,6 +119,17 @@ describe("Anthropic ACP facade", () => {
     expect(transcript).toContain("event: message_stop");
     expect(transcript).not.toContain('"delta":{"type":"text_delta","text":""}');
 
+    const messageStartMatch = transcript.match(/event: message_start\ndata: (.+)\n/);
+    expect(messageStartMatch).toBeTruthy();
+    const messageStart = JSON.parse(messageStartMatch![1]) as any;
+    expect(messageStart.message.usage.input_tokens).toBeGreaterThan(0);
+
+    const messageDeltaMatch = transcript.match(/event: message_delta\ndata: (.+)\n/);
+    expect(messageDeltaMatch).toBeTruthy();
+    const messageDelta = JSON.parse(messageDeltaMatch![1]) as any;
+    expect(messageDelta.usage.input_tokens).toBe(11);
+    expect(messageDelta.usage.output_tokens).toBe(21);
+
     await writeFile(path.join(TEST_OUTPUT_DIR, "streaming-transcript.txt"), transcript, "utf8");
   });
 
