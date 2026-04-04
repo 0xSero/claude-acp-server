@@ -31,6 +31,7 @@ export type ServerConfig = {
   host: string;
   apiKey?: string;
   anthropicVersion: string;
+  traceRequests: boolean;
   sessionHeader: string;
   requestIdHeader: string;
   backend: BackendCommandConfig;

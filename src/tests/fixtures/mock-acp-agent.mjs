@@ -165,6 +165,29 @@ class MockAgent {
       });
     }
 
+    if (text.includes("TRIGGER TOOL BRIDGE")) {
+      await this.client.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: '<anthropic_tool_use>{"name":"wiki","input":{"query":"acp"}}</anthropic_tool_use>',
+          },
+        },
+      });
+
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 10 + session.turns,
+          outputTokens: 20 + session.turns,
+          cachedReadTokens: 0,
+          cachedWriteTokens: 0,
+        },
+      };
+    }
+
     await this.client.sessionUpdate({
       sessionId: params.sessionId,
       update: {
@@ -175,6 +198,7 @@ class MockAgent {
         },
       },
     });
+
     await this.client.sessionUpdate({
       sessionId: params.sessionId,
       update: {

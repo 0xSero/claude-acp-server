@@ -45,7 +45,12 @@ export interface FacadeHttpServer {
 
 export interface PromptTranslator {
   toPromptRequest(sessionId: string, request: MessageCreateParamsBase): PromptRequest;
-  createStreamCollector(args: { requestId: string; sessionId: string; model: string }): {
+  createStreamCollector(args: {
+    requestId: string;
+    sessionId: string;
+    model: string;
+    enableToolBridge: boolean;
+  }): {
     start: () => RawMessageStreamEvent;
     pushNotification: (notification: SessionNotification) => RawMessageStreamEvent[];
     finish: (response: PromptResponse) => FinalizedAnthropicTurn;
@@ -54,6 +59,7 @@ export interface PromptTranslator {
     requestId: string;
     sessionId: string;
     model: string;
+    enableToolBridge: boolean;
     response: PromptResponse;
     notifications: SessionNotification[];
   }): FinalizedAnthropicTurn;

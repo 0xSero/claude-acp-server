@@ -59,6 +59,7 @@ export function loadServerConfig(
     host: env.HOST ?? DEFAULT_HOST,
     apiKey: env.FACADE_API_KEY,
     anthropicVersion: env.ANTHROPIC_VERSION ?? DEFAULT_ANTHROPIC_VERSION,
+    traceRequests: env.CLAUDE_ACP_TRACE_REQUESTS === "1",
     sessionHeader: DEFAULT_SESSION_HEADER,
     requestIdHeader: DEFAULT_REQUEST_ID_HEADER,
     backend: resolveBackendCommand(env),

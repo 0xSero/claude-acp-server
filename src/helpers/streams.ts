@@ -52,8 +52,12 @@ export function openSse(response: ServerResponse): void {
   response.statusCode = 200;
   response.setHeader("content-type", "text/event-stream; charset=utf-8");
   response.setHeader("cache-control", "no-cache, no-transform");
-  response.setHeader("connection", "close");
+  response.setHeader("connection", "keep-alive");
+  response.setHeader("x-accel-buffering", "no");
+  response.socket?.setNoDelay(true);
+  response.socket?.setKeepAlive(true);
   response.flushHeaders();
+  response.write(": connected\n\n");
 }
 
 export function writeSseEvent(response: ServerResponse, event: string, data: unknown): void {

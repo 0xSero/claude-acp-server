@@ -10,6 +10,7 @@ import type {
   RawMessageStreamEvent,
 } from "@anthropic-ai/sdk/resources/messages/messages";
 import { HttpError, requireAnthropicHeaders } from "../../helpers/errors.js";
+import { shouldEnableToolBridge } from "../../helpers/messages.js";
 import type { FinalizedAnthropicTurn, ServerConfig } from "../../types.js";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
 
@@ -43,6 +44,7 @@ export class AnthropicAcpFacade implements AnthropicFacade {
     const sessionId = ensured.sessionId;
     const requestedModel = body.model;
     const backendModel = MODEL_ALIASES[requestedModel] ?? requestedModel;
+    const enableToolBridge = shouldEnableToolBridge(body);
 
     if (ensured.models?.availableModels?.length) {
       const knownModelIds = new Set(ensured.models.availableModels.map((entry) => entry.modelId));
@@ -64,6 +66,7 @@ export class AnthropicAcpFacade implements AnthropicFacade {
       requestId,
       sessionId,
       model: requestedModel,
+      enableToolBridge,
     });
     let emittedStreamEventCount = 0;
 
@@ -101,6 +104,7 @@ export class AnthropicAcpFacade implements AnthropicFacade {
       requestId,
       sessionId,
       model: requestedModel,
+      enableToolBridge,
       response,
       notifications,
     });

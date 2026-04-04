@@ -3,8 +3,19 @@ import type {
   ContentBlockParam,
   MessageCreateParamsBase,
   MessageParam,
+  ToolChoice,
+  ToolUseBlockParam,
+  ToolUnion,
 } from "@anthropic-ai/sdk/resources/messages/messages";
 import { HttpError } from "./errors.js";
+
+export const TOOL_USE_BRIDGE_START = "<anthropic_tool_use>";
+export const TOOL_USE_BRIDGE_END = "</anthropic_tool_use>";
+
+export type BridgedToolUse = {
+  name: string;
+  input: unknown;
+};
 
 function normalizeMessageContent(content: MessageParam["content"]): ContentBlockParam[] {
   if (typeof content === "string") {
@@ -21,6 +32,8 @@ function renderContentBlockForTranscript(block: ContentBlockParam): string {
       return `[image:${block.source.type === "url" ? block.source.url : block.source.media_type}]`;
     case "tool_result":
       return `[tool_result:${block.tool_use_id}]`;
+    case "tool_use":
+      return `[tool_use:${block.name}:${block.id}] ${JSON.stringify(block.input)}`;
     case "document":
       return "[document]";
     default:
@@ -34,6 +47,128 @@ function messageToTranscriptLine(message: MessageParam): string {
     .join("\n");
 
   return `${message.role.toUpperCase()}:\n${rendered}`.trim();
+}
+
+function normalizeClientTools(request: MessageCreateParamsBase): ToolUnion[] {
+  if (!Array.isArray(request.tools)) {
+    return [];
+  }
+
+  return request.tools.filter((tool): tool is ToolUnion => {
+    return typeof tool === "object" && tool !== null && "name" in tool;
+  });
+}
+
+function renderToolChoice(choice: ToolChoice | undefined): string | null {
+  if (!choice) {
+    return null;
+  }
+
+  switch (choice.type) {
+    case "auto":
+    case "any":
+    case "none":
+      return choice.type;
+    case "tool":
+      return `tool:${choice.name}`;
+    default:
+      return null;
+  }
+}
+
+function buildClientToolBridgeContext(
+  tools: ToolUnion[],
+  toolChoice: ToolChoice | undefined,
+): string | null {
+  if (!tools.length) {
+    return null;
+  }
+
+  const lines = [
+    "Anthropic client tools were provided with this request.",
+    "These tools are available on the northbound Anthropic client side, not through ACP directly.",
+    "If prior transcript messages include tool_use and tool_result blocks, treat those as real completed client-side tool interactions.",
+  ];
+
+  const renderedToolChoice = renderToolChoice(toolChoice);
+  if (renderedToolChoice) {
+    lines.push(`Requested tool_choice: ${renderedToolChoice}`);
+  }
+
+  lines.push(
+    "If you need the client to execute one of these tools now, respond with exactly the following wrapper and no other text:",
+    TOOL_USE_BRIDGE_START,
+    '{"name":"<tool_name>","input":{}}',
+    TOOL_USE_BRIDGE_END,
+    "Only request one tool call in this format.",
+    "If no client-side tool is needed, answer normally.",
+    "",
+    "Available client tools:",
+  );
+
+  for (const tool of tools) {
+    lines.push(`- ${tool.name}`);
+    if ("description" in tool && typeof tool.description === "string" && tool.description.trim()) {
+      lines.push(`  description: ${tool.description.trim()}`);
+    }
+    if ("input_schema" in tool && tool.input_schema !== undefined) {
+      lines.push(`  input_schema: ${JSON.stringify(tool.input_schema)}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+export function hasClientTools(request: MessageCreateParamsBase): boolean {
+  return normalizeClientTools(request).length > 0;
+}
+
+export function shouldEnableToolBridge(request: MessageCreateParamsBase): boolean {
+  if (!hasClientTools(request)) {
+    return false;
+  }
+
+  return request.tool_choice?.type !== "none";
+}
+
+export function parseBridgedToolUse(text: string): BridgedToolUse | null {
+  const match = text
+    .trim()
+    .match(
+      new RegExp(
+        `^${TOOL_USE_BRIDGE_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*([\\s\\S]+?)\\s*${TOOL_USE_BRIDGE_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+      ),
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(match[1]) as Partial<BridgedToolUse>;
+    if (typeof parsed.name !== "string" || !parsed.name.trim()) {
+      return null;
+    }
+    return {
+      name: parsed.name.trim(),
+      input: parsed.input ?? {},
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function toAnthropicToolUseBlock(
+  bridged: BridgedToolUse,
+  id: string,
+): ToolUseBlockParam & { caller: { type: "direct" } } {
+  return {
+    type: "tool_use",
+    id,
+    name: bridged.name,
+    input: bridged.input,
+    caller: { type: "direct" },
+  };
 }
 
 function contentBlockToAcp(block: ContentBlockParam): ContentBlock[] {
@@ -81,6 +216,13 @@ function contentBlockToAcp(block: ContentBlockParam): ContentBlock[] {
           text: `[tool_result:${block.tool_use_id}] ${typeof block.content === "string" ? block.content : JSON.stringify(block.content)}`,
         },
       ];
+    case "tool_use":
+      return [
+        {
+          type: "text",
+          text: `[tool_use:${block.name}:${block.id}] ${JSON.stringify(block.input)}`,
+        },
+      ];
     default:
       return [{ type: "text", text: renderContentBlockForTranscript(block) }];
   }
@@ -107,19 +249,9 @@ export function anthropicRequestToPromptRequest(
     });
   }
 
-  if (
-    Array.isArray((request as { tools?: unknown[] }).tools) &&
-    (request as { tools?: unknown[] }).tools!.length
-  ) {
-    throw new HttpError({
-      status: 400,
-      type: "invalid_request_error",
-      message: "Client-defined Anthropic tools are not supported by this facade.",
-    });
-  }
-
   const prompt: ContentBlock[] = [];
   const contextLines: string[] = [];
+  const tools = normalizeClientTools(request);
 
   if (typeof request.system === "string" && request.system.trim()) {
     contextLines.push(`SYSTEM:\n${request.system.trim()}`);
@@ -128,6 +260,11 @@ export function anthropicRequestToPromptRequest(
       .map((block) => ("text" in block ? block.text : "[system block]"))
       .join("\n");
     contextLines.push(`SYSTEM:\n${rendered}`);
+  }
+
+  const toolBridgeContext = buildClientToolBridgeContext(tools, request.tool_choice);
+  if (toolBridgeContext) {
+    contextLines.push(toolBridgeContext);
   }
 
   for (const message of request.messages.slice(0, -1)) {

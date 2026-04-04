@@ -88,8 +88,24 @@ export class AnthropicHttpServer implements FacadeHttpServer {
 
       if (request.method === "POST" && url.pathname === "/v1/messages") {
         const abortController = new AbortController();
-        request.on("close", () => abortController.abort());
+        request.on("aborted", () => abortController.abort());
+        response.on("close", () => {
+          if (!response.writableEnded) {
+            abortController.abort();
+          }
+        });
         const body = await readJsonBody<any>(request);
+
+        if (this.config.traceRequests) {
+          this.logger.log("[claude-acp-server] request", {
+            path: url.pathname,
+            stream: Boolean(body?.stream),
+            model: typeof body?.model === "string" ? body.model : null,
+            messages: Array.isArray(body?.messages) ? body.messages.length : 0,
+            tools: Array.isArray(body?.tools) ? body.tools.length : 0,
+            userAgent: headers.get("user-agent"),
+          });
+        }
 
         if (body.stream) {
           let sseOpened = false;

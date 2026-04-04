@@ -15,6 +15,7 @@ function buildConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
     host: "127.0.0.1",
     apiKey: "test-key",
     anthropicVersion: "2023-06-01",
+    traceRequests: false,
     sessionHeader: "x-acp-session-id",
     requestIdHeader: "request-id",
     sessionCwd: process.cwd(),
@@ -110,13 +111,97 @@ describe("Anthropic ACP facade", () => {
     expect(response.headers.get("content-type")).toContain("text/event-stream");
 
     const transcript = await response.text();
+    expect(transcript).toContain(": connected");
     expect(transcript).toContain("event: message_start");
     expect(transcript).toContain("event: content_block_start");
     expect(transcript).toContain("event: content_block_delta");
     expect(transcript).toContain("event: message_delta");
     expect(transcript).toContain("event: message_stop");
+    expect(transcript).not.toContain('"delta":{"type":"text_delta","text":""}');
 
     await writeFile(path.join(TEST_OUTPUT_DIR, "streaming-transcript.txt"), transcript, "utf8");
+  });
+
+  it("accepts requests that include Anthropic client tools", async () => {
+    const response = await postJson(`${baseUrl}/v1/messages`, {
+      model: "mock-sonnet-1",
+      max_tokens: 256,
+      tools: [
+        {
+          name: "wiki",
+          description: "Look up wiki entries",
+          input_schema: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+            },
+            required: ["query"],
+          },
+        },
+      ],
+      messages: [{ role: "user", content: "Hello with tools" }],
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as any;
+    expect(body.type).toBe("message");
+    expect(body.content[0].type).toBe("text");
+  });
+
+  it("streams plain text even when Anthropic client tools are present", async () => {
+    const response = await postJson(`${baseUrl}/v1/messages`, {
+      model: "mock-sonnet-1",
+      max_tokens: 256,
+      stream: true,
+      tools: [
+        {
+          name: "wiki",
+          description: "Look up wiki entries",
+          input_schema: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+            },
+            required: ["query"],
+          },
+        },
+      ],
+      messages: [{ role: "user", content: "Hello with streaming tools" }],
+    });
+
+    expect(response.status).toBe(200);
+    const transcript = await response.text();
+    expect(transcript).toContain("event: content_block_delta");
+    expect(transcript).toContain("Hello with streaming tools");
+    expect(transcript).not.toContain('"type":"tool_use"');
+  });
+
+  it("bridges a tool request into an Anthropic tool_use response", async () => {
+    const response = await postJson(`${baseUrl}/v1/messages`, {
+      model: "mock-sonnet-1",
+      max_tokens: 256,
+      tools: [
+        {
+          name: "wiki",
+          description: "Look up wiki entries",
+          input_schema: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+            },
+            required: ["query"],
+          },
+        },
+      ],
+      messages: [{ role: "user", content: "TRIGGER TOOL BRIDGE" }],
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as any;
+    expect(body.stop_reason).toBe("tool_use");
+    expect(body.content[0].type).toBe("tool_use");
+    expect(body.content[0].name).toBe("wiki");
+    expect(body.content[0].input).toEqual({ query: "acp" });
   });
 
   it("lists models from the ACP backend", async () => {
