@@ -6,6 +6,7 @@ export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 4319;
 export const DEFAULT_SESSION_HEADER = "x-acp-session-id";
 export const DEFAULT_REQUEST_ID_HEADER = "request-id";
+export const DEFAULT_CWD_HEADER = "x-acp-cwd";
 export const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 
 export const ACP_CLIENT_CAPABILITIES: ClientCapabilities = {
@@ -54,6 +55,8 @@ export function resolveBackendCommand(
 export function loadServerConfig(
   env: Record<string, string | undefined> = process.env,
 ): ServerConfig {
+  const backend = resolveBackendCommand(env);
+  const sessionCwd = env.ACP_SESSION_CWD || backend.cwd;
   return {
     port: Number(env.PORT ?? DEFAULT_PORT),
     host: env.HOST ?? DEFAULT_HOST,
@@ -62,9 +65,11 @@ export function loadServerConfig(
     traceRequests: env.CLAUDE_ACP_TRACE_REQUESTS === "1",
     sessionHeader: DEFAULT_SESSION_HEADER,
     requestIdHeader: DEFAULT_REQUEST_ID_HEADER,
-    backend: resolveBackendCommand(env),
-    sessionCwd: env.ACP_SESSION_CWD || process.cwd(),
+    backend,
+    sessionCwd,
+    cwdHeader: DEFAULT_CWD_HEADER,
     permissionPolicy: resolvePermissionPolicy(env.ACP_PERMISSION_POLICY),
+    permissionMode: env.ACP_PERMISSION_MODE,
     terminalOutputByteLimit: Number(
       env.ACP_TERMINAL_OUTPUT_BYTE_LIMIT ?? DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT,
     ),

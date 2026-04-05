@@ -19,7 +19,8 @@ export interface Logger {
 
 export interface BackendManager {
   initialize(): Promise<void>;
-  ensureSession(sessionId: string | undefined): Promise<NewSessionResponse>;
+  ensureSession(sessionId: string | undefined, cwd?: string): Promise<NewSessionResponse>;
+  setSessionMode(sessionId: SessionId, modeId: string): Promise<void>;
   setSessionModel(sessionId: SessionId, model: string): Promise<void>;
   prompt(options: PromptExecutionOptions): Promise<PromptResponse>;
   listModels(): Promise<ModelInfo[]>;
@@ -51,6 +52,7 @@ export interface PromptTranslator {
     sessionId: string;
     model: string;
     enableToolBridge: boolean;
+    includeProgressThinking: boolean;
     initialUsage: ProvisionalStreamUsage;
   }): {
     start: () => RawMessageStreamEvent;

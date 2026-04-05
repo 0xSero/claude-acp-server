@@ -165,6 +165,55 @@ class MockAgent {
       });
     }
 
+    if (text.includes("TRIGGER TOOL CALL")) {
+      // Send thinking
+      await this.client.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "I need to read a file to answer this." },
+        },
+      });
+
+      // Send tool_call
+      await this.client.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "tc-001",
+          title: "Read",
+          kind: "read",
+          status: "in_progress",
+          rawInput: { path: "/tmp/test.txt" },
+        },
+      });
+
+      // Send tool_call_update (completed)
+      await this.client.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tc-001",
+          status: "completed",
+          rawOutput: "file contents here",
+        },
+      });
+
+      // Send text after tool
+      await this.client.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Based on the file, here is the answer." },
+        },
+      });
+
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 50, outputTokens: 100, cachedReadTokens: 0, cachedWriteTokens: 0 },
+      };
+    }
+
     if (text.includes("TRIGGER TOOL BRIDGE")) {
       await this.client.sessionUpdate({
         sessionId: params.sessionId,

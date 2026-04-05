@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createFacadeServer } from "../lib.js";
 import type { ServerConfig } from "../types.js";
 
 const FIXTURE_PATH = path.resolve("src/tests/fixtures/mock-acp-agent.mjs");
 const TEST_OUTPUT_DIR = path.resolve("test-output");
+const INFERRED_CWD_FIXTURE = "/tmp/claude-acp-server-inferred-cwd";
 
 type StartedServer = Awaited<ReturnType<ReturnType<typeof createFacadeServer>["listen"]>>;
 
@@ -19,6 +20,7 @@ function buildConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
     sessionHeader: "x-acp-session-id",
     requestIdHeader: "request-id",
     sessionCwd: process.cwd(),
+    cwdHeader: "x-acp-cwd",
     permissionPolicy: "reject_once",
     terminalOutputByteLimit: 128 * 1024,
     backend: {
@@ -53,6 +55,7 @@ describe("Anthropic ACP facade", () => {
 
   beforeEach(async () => {
     await mkdir(TEST_OUTPUT_DIR, { recursive: true });
+    await rm(path.join(INFERRED_CWD_FIXTURE, "test-output/mock-write.txt"), { force: true });
     server = createFacadeServer(buildConfig(), console);
     running = await server.listen();
     baseUrl = `http://${running.address.address}:${running.address.port}`;
@@ -213,6 +216,75 @@ describe("Anthropic ACP facade", () => {
     expect(body.content[0].type).toBe("tool_use");
     expect(body.content[0].name).toBe("wiki");
     expect(body.content[0].input).toEqual({ query: "acp" });
+  });
+
+  it("surfaces ACP-native progress as thinking blocks while keeping tool_use hidden", async () => {
+    const streaming = await postJson(`${baseUrl}/v1/messages`, {
+      model: "mock-sonnet-1",
+      max_tokens: 256,
+      stream: true,
+      messages: [{ role: "user", content: "TRIGGER TOOL CALL" }],
+    });
+
+    expect(streaming.status).toBe(200);
+    const transcript = await streaming.text();
+    expect(transcript).toContain("Based on the file");
+    expect(transcript).toContain('"type":"thinking"');
+    expect(transcript).toContain("thinking_delta");
+    expect(transcript).toContain("Using Read");
+    expect(transcript).toContain("Completed Read");
+    expect(transcript).not.toContain('"type":"tool_use"');
+
+    const nonStreaming = await postJson(`${baseUrl}/v1/messages`, {
+      model: "mock-sonnet-1",
+      max_tokens: 256,
+      messages: [{ role: "user", content: "TRIGGER TOOL CALL" }],
+    });
+
+    expect(nonStreaming.status).toBe(200);
+    const body = (await nonStreaming.json()) as any;
+    expect(body.content).toEqual([
+      {
+        type: "text",
+        text: "Based on the file, here is the answer.",
+        citations: null,
+      },
+    ]);
+
+    await writeFile(
+      path.join(TEST_OUTPUT_DIR, "tool-call-transcript.txt"),
+      JSON.stringify({ transcript, body }, null, 2),
+      "utf8",
+    );
+  });
+
+  it("infers the ACP session cwd from Droid-style system reminders", async () => {
+    const response = await postJson(`${baseUrl}/v1/messages`, {
+      model: "mock-sonnet-1",
+      max_tokens: 64,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `<system-reminder>\n% pwd\n${INFERRED_CWD_FIXTURE}\n</system-reminder>`,
+            },
+            {
+              type: "text",
+              text: "write file",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(response.status).toBe(200);
+    const mockWrite = await readFile(
+      path.join(INFERRED_CWD_FIXTURE, "test-output/mock-write.txt"),
+      "utf8",
+    );
+    expect(mockWrite).toContain("written by mock agent");
   });
 
   it("lists models from the ACP backend", async () => {

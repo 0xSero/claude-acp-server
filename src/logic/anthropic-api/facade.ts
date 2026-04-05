@@ -10,13 +10,25 @@ import type {
   RawMessageStreamEvent,
 } from "@anthropic-ai/sdk/resources/messages/messages";
 import { HttpError, requireAnthropicHeaders } from "../../helpers/errors.js";
-import { estimateProvisionalStreamUsage, shouldEnableToolBridge } from "../../helpers/messages.js";
+import {
+  estimateProvisionalStreamUsage,
+  inferWorkingDirectoryFromRequest,
+  shouldEnableToolBridge,
+} from "../../helpers/messages.js";
 import type { FinalizedAnthropicTurn, ServerConfig } from "../../types.js";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
 
 const MODEL_ALIASES: Record<string, string> = {
   "claude-sonnet-4-6": "sonnet",
+  "claude-sonnet-4.6": "sonnet",
+  "sonnet-4-6": "sonnet",
+  "sonnet-4.6": "sonnet",
+  sonnet: "sonnet",
   "claude-opus-4-6": "default",
+  "claude-opus-4.6": "default",
+  "opus-4-6": "default",
+  "opus-4.6": "default",
+  opus: "default",
 };
 
 export class AnthropicAcpFacade implements AnthropicFacade {
@@ -39,9 +51,30 @@ export class AnthropicAcpFacade implements AnthropicFacade {
     requireAnthropicHeaders(headers, this.config.anthropicVersion, this.config.apiKey);
 
     const requestedSessionId = headers.get(this.config.sessionHeader) ?? undefined;
+    const requestedCwd =
+      headers.get(this.config.cwdHeader) ?? inferWorkingDirectoryFromRequest(body) ?? undefined;
     const hasPriorSession = Boolean(requestedSessionId?.trim());
-    const ensured = await this.backend.ensureSession(requestedSessionId);
+    const ensured = await this.backend.ensureSession(requestedSessionId, requestedCwd);
     const sessionId = ensured.sessionId;
+
+    if (!hasPriorSession && this.config.permissionMode && ensured.modes?.availableModes?.length) {
+      const targetMode = ensured.modes.availableModes.find(
+        (m) => m.id === this.config.permissionMode,
+      );
+      if (targetMode) {
+        try {
+          await this.backend.setSessionMode(sessionId, targetMode.id);
+        } catch (err) {
+          this.logger.warn("[claude-acp-server] failed to set permission mode", err);
+        }
+      } else if (this.config.traceRequests) {
+        this.logger.log("[claude-acp-server] requested mode not available", {
+          requested: this.config.permissionMode,
+          available: ensured.modes.availableModes.map((m) => m.id),
+        });
+      }
+    }
+
     const requestedModel = body.model;
     const backendModel = MODEL_ALIASES[requestedModel] ?? requestedModel;
     const enableToolBridge = shouldEnableToolBridge(body);
@@ -71,6 +104,7 @@ export class AnthropicAcpFacade implements AnthropicFacade {
       sessionId,
       model: requestedModel,
       enableToolBridge,
+      includeProgressThinking: Boolean(streamObserver),
       initialUsage,
     });
     let emittedStreamEventCount = 0;
@@ -86,9 +120,20 @@ export class AnthropicAcpFacade implements AnthropicFacade {
       request: promptRequest,
       signal,
       onNotification: async (notification) => {
+        if (this.config.traceRequests) {
+          this.logger.log("[claude-acp-server] notification", {
+            type: notification.update.sessionUpdate,
+          });
+        }
         notifications.push(notification);
         if (streamObserver) {
           const events = collector.pushNotification(notification);
+          if (this.config.traceRequests && events.length) {
+            this.logger.log("[claude-acp-server] emitting SSE events", {
+              count: events.length,
+              types: events.map((event) => event.type),
+            });
+          }
           emittedStreamEventCount += events.length;
           for (const event of events) {
             await streamObserver.onEvent(event);

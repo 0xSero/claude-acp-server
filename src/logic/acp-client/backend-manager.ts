@@ -57,12 +57,13 @@ export class AcpBackendManager implements BackendManager, Client {
     await this.ensureStarted();
   }
 
-  async ensureSession(sessionId: string | undefined): Promise<NewSessionResponse> {
+  async ensureSession(sessionId: string | undefined, cwd?: string): Promise<NewSessionResponse> {
     const connection = await this.ensureConnection();
+    const sessionCwd = cwd || this.config.sessionCwd;
 
     if (!sessionId) {
       const created = await connection.newSession({
-        cwd: this.config.sessionCwd,
+        cwd: sessionCwd,
         mcpServers: [],
       });
       this.modelsCache = created.models ?? this.modelsCache;
@@ -71,7 +72,7 @@ export class AcpBackendManager implements BackendManager, Client {
 
     const resumed = await connection.unstable_resumeSession({
       sessionId,
-      cwd: this.config.sessionCwd,
+      cwd: sessionCwd,
       mcpServers: [],
     });
     return {
@@ -80,6 +81,11 @@ export class AcpBackendManager implements BackendManager, Client {
       models: resumed.models,
       configOptions: resumed.configOptions,
     };
+  }
+
+  async setSessionMode(sessionId: SessionId, modeId: string): Promise<void> {
+    const connection = await this.ensureConnection();
+    await connection.setSessionMode({ sessionId, modeId });
   }
 
   async setSessionModel(sessionId: SessionId, model: string): Promise<void> {

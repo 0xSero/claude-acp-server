@@ -109,17 +109,27 @@ export class AnthropicHttpServer implements FacadeHttpServer {
 
         if (body.stream) {
           let sseOpened = false;
-          await this.facade.handleMessages(headers, body, abortController.signal, {
-            onReady: async ({ sessionId, requestId: streamRequestId }) => {
-              response.setHeader(this.config.sessionHeader, sessionId);
-              response.setHeader(this.config.requestIdHeader, streamRequestId);
-              openSse(response);
-              sseOpened = true;
-            },
-            onEvent: async (event) => {
-              writeSseEvent(response, event.type, event);
-            },
-          });
+          let heartbeat: ReturnType<typeof setInterval> | null = null;
+          try {
+            await this.facade.handleMessages(headers, body, abortController.signal, {
+              onReady: ({ sessionId, requestId: streamRequestId }) => {
+                response.setHeader(this.config.sessionHeader, sessionId);
+                response.setHeader(this.config.requestIdHeader, streamRequestId);
+                openSse(response);
+                sseOpened = true;
+                heartbeat = setInterval(() => {
+                  if (!response.writableEnded) {
+                    response.write(": heartbeat\n\n");
+                  }
+                }, 2000);
+              },
+              onEvent: (event) => {
+                writeSseEvent(response, event.type, event);
+              },
+            });
+          } finally {
+            if (heartbeat) clearInterval(heartbeat);
+          }
           if (!sseOpened) {
             openSse(response);
           }

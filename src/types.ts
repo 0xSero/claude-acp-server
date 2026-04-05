@@ -36,7 +36,9 @@ export type ServerConfig = {
   requestIdHeader: string;
   backend: BackendCommandConfig;
   sessionCwd: string;
+  cwdHeader: string;
   permissionPolicy: PermissionPolicy;
+  permissionMode?: string;
   terminalOutputByteLimit: number;
 };
 

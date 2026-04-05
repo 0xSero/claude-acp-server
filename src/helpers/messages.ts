@@ -23,6 +23,35 @@ export type ProvisionalStreamUsage = {
   cache_read_input_tokens: number | null;
 };
 
+function collectRequestTextFragments(request: MessageCreateParamsBase): string[] {
+  const fragments: string[] = [];
+
+  if (typeof request.system === "string") {
+    fragments.push(request.system);
+  } else if (Array.isArray(request.system)) {
+    for (const block of request.system) {
+      if ("text" in block && typeof block.text === "string") {
+        fragments.push(block.text);
+      }
+    }
+  }
+
+  for (const message of request.messages) {
+    if (typeof message.content === "string") {
+      fragments.push(message.content);
+      continue;
+    }
+
+    for (const block of message.content) {
+      if (block.type === "text") {
+        fragments.push(block.text);
+      }
+    }
+  }
+
+  return fragments;
+}
+
 function normalizeMessageContent(content: MessageParam["content"]): ContentBlockParam[] {
   if (typeof content === "string") {
     return [{ type: "text", text: content }];
@@ -132,6 +161,24 @@ export function estimateProvisionalStreamUsage(args: {
     cache_creation_input_tokens: args.hasPriorSession ? 0 : cached,
     cache_read_input_tokens: args.hasPriorSession ? cached : 0,
   };
+}
+
+export function inferWorkingDirectoryFromRequest(
+  request: MessageCreateParamsBase,
+): string | undefined {
+  for (const fragment of collectRequestTextFragments(request)) {
+    const pwdMatch = fragment.match(/(?:^|\n)% pwd\s*\n([^\n]+)/);
+    if (pwdMatch?.[1]?.startsWith("/")) {
+      return pwdMatch[1].trim();
+    }
+
+    const folderMatch = fragment.match(/Current folder:\s*(\/[^\n]+)/);
+    if (folderMatch?.[1]?.startsWith("/")) {
+      return folderMatch[1].trim();
+    }
+  }
+
+  return undefined;
 }
 
 function renderToolChoice(choice: ToolChoice | undefined): string | null {

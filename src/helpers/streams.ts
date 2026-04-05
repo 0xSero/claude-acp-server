@@ -61,12 +61,12 @@ export function openSse(response: ServerResponse): void {
 }
 
 export function writeSseEvent(response: ServerResponse, event: string, data: unknown): void {
-  response.write(`event: ${event}\n`);
-  response.write(`data: ${JSON.stringify(data)}\n\n`);
+  // Single atomic write ensures the full SSE event is flushed in one TCP segment,
+  // preventing auto-cork batching when multiple events arrive in the same tick.
+  response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 export function closeSse(response: ServerResponse): void {
-  response.write("event: message_stop\n");
-  response.write('data: {"type":"message_stop"}\n\n');
+  response.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
   response.end();
 }

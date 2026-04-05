@@ -3,6 +3,7 @@ import type { PromptResponse, SessionNotification } from "@agentclientprotocol/s
 import type {
   Message,
   RawMessageStreamEvent,
+  ThinkingBlock,
   TextBlock,
   ToolUseBlock,
 } from "@anthropic-ai/sdk/resources/messages/messages";
@@ -43,15 +44,18 @@ class AnthropicStreamCollector {
   private readonly messageId = newMessageId();
   private readonly toolUseId = `toolu_${randomUUID().replace(/-/g, "")}`;
   private activeTextBlockIndex: number | null = null;
+  private activeThinkingBlockIndex: number | null = null;
   private bridgedToolUse: ReturnType<typeof parseBridgedToolUse> = null;
   private pendingText = "";
   private pendingBridge = "";
+  private readonly toolCallTitles = new Map<string, string>();
 
   constructor(
     private readonly requestId: string,
     private readonly sessionId: string,
     private readonly model: string,
     private readonly enableToolBridge: boolean,
+    private readonly includeProgressThinking: boolean,
     initialUsage: ProvisionalStreamUsage,
   ) {
     this.usage = {
@@ -91,6 +95,8 @@ class AnthropicStreamCollector {
       return;
     }
 
+    this.closeThinkingBlock(emitted);
+
     this.activeTextBlockIndex = this.content.length;
     this.content.push({
       type: "text",
@@ -129,6 +135,141 @@ class AnthropicStreamCollector {
         text,
       },
     });
+  }
+
+  private ensureThinkingBlockStarted(emitted: RawMessageStreamEvent[]) {
+    if (this.activeThinkingBlockIndex !== null || !this.includeProgressThinking) {
+      return;
+    }
+
+    this.activeThinkingBlockIndex = this.content.length;
+    this.content.push({
+      type: "thinking",
+      thinking: "",
+      signature: "",
+    } as ThinkingBlock);
+
+    emitted.push({
+      type: "content_block_start",
+      index: this.activeThinkingBlockIndex,
+      content_block: {
+        type: "thinking",
+        thinking: "",
+        signature: "",
+      },
+    });
+  }
+
+  private emitThinkingDelta(text: string, emitted: RawMessageStreamEvent[]) {
+    if (!this.includeProgressThinking || !text.length) {
+      return;
+    }
+
+    this.ensureThinkingBlockStarted(emitted);
+    const block = this.content[this.activeThinkingBlockIndex!];
+    if (block.type === "thinking") {
+      block.thinking += text;
+    }
+
+    emitted.push({
+      type: "content_block_delta",
+      index: this.activeThinkingBlockIndex!,
+      delta: {
+        type: "thinking_delta",
+        thinking: text,
+      },
+    });
+  }
+
+  private closeThinkingBlock(emitted: RawMessageStreamEvent[]) {
+    if (this.activeThinkingBlockIndex === null) {
+      return;
+    }
+
+    emitted.push({
+      type: "content_block_stop",
+      index: this.activeThinkingBlockIndex,
+    });
+    this.activeThinkingBlockIndex = null;
+  }
+
+  private summarizeToolPayload(value: unknown): string {
+    if (value === undefined || value === null) {
+      return "";
+    }
+
+    if (typeof value === "string") {
+      const normalized = value.trim().replace(/\s+/g, " ");
+      if (!normalized.length) {
+        return "";
+      }
+      return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+    }
+
+    try {
+      const serialized = JSON.stringify(value);
+      if (serialized === "{}" || serialized === "[]") {
+        return "";
+      }
+      return serialized.length > 180 ? `${serialized.slice(0, 177)}...` : serialized;
+    } catch {
+      return String(value);
+    }
+  }
+
+  private summarizeToolLocations(
+    locations:
+      | Extract<SessionNotification["update"], { sessionUpdate: "tool_call" }>["locations"]
+      | Extract<SessionNotification["update"], { sessionUpdate: "tool_call_update" }>["locations"],
+  ): string {
+    if (!Array.isArray(locations) || !locations.length) {
+      return "";
+    }
+
+    const paths = locations
+      .map((location) => location.path)
+      .filter((path): path is string => typeof path === "string" && path.length > 0)
+      .slice(0, 2);
+
+    return paths.join(", ");
+  }
+
+  private formatToolCallStart(
+    update: Extract<SessionNotification["update"], { sessionUpdate: "tool_call" }>,
+  ): string {
+    const title = update.title?.trim() || "Tool";
+    this.toolCallTitles.set(update.toolCallId, title);
+    const detail =
+      this.summarizeToolPayload(update.rawInput) || this.summarizeToolLocations(update.locations);
+    return detail ? `\nUsing ${title}: ${detail}\n` : `\nUsing ${title}\n`;
+  }
+
+  private formatToolCallUpdate(
+    update: Extract<SessionNotification["update"], { sessionUpdate: "tool_call_update" }>,
+  ): string | null {
+    const title = update.title?.trim() || this.toolCallTitles.get(update.toolCallId) || "Tool";
+    if (update.title?.trim()) {
+      this.toolCallTitles.set(update.toolCallId, update.title.trim());
+    }
+
+    if (update.status === "completed") {
+      const outputSummary =
+        this.summarizeToolPayload(update.rawOutput) ||
+        this.summarizeToolLocations(update.locations);
+      return outputSummary ? `\nCompleted ${title}: ${outputSummary}\n` : `\nCompleted ${title}\n`;
+    }
+
+    if (update.status === "failed") {
+      const outputSummary = this.summarizeToolPayload(update.rawOutput);
+      return outputSummary ? `\nFailed ${title}: ${outputSummary}\n` : `\nFailed ${title}\n`;
+    }
+
+    if (update.status === "in_progress" && update.rawOutput !== undefined) {
+      const outputSummary = this.summarizeToolPayload(update.rawOutput);
+      return outputSummary ? `\n${title}: ${outputSummary}\n` : null;
+    }
+
+    return null;
   }
 
   private longestStartTokenSuffix(value: string): number {
@@ -211,6 +352,27 @@ class AnthropicStreamCollector {
     const emitted: RawMessageStreamEvent[] = [];
     const update = notification.update;
 
+    if (update.sessionUpdate === "agent_thought_chunk" && update.content.type === "text") {
+      this.emitThinkingDelta(update.content.text, emitted);
+      this.streamEvents.push(...emitted);
+      return emitted;
+    }
+
+    if (update.sessionUpdate === "tool_call") {
+      this.emitThinkingDelta(this.formatToolCallStart(update), emitted);
+      this.streamEvents.push(...emitted);
+      return emitted;
+    }
+
+    if (update.sessionUpdate === "tool_call_update") {
+      const updateText = this.formatToolCallUpdate(update);
+      if (updateText) {
+        this.emitThinkingDelta(updateText, emitted);
+      }
+      this.streamEvents.push(...emitted);
+      return emitted;
+    }
+
     if (update.sessionUpdate !== "agent_message_chunk") {
       return emitted;
     }
@@ -245,6 +407,7 @@ class AnthropicStreamCollector {
     }
 
     if (this.bridgedToolUse) {
+      this.closeThinkingBlock(this.streamEvents);
       if (this.activeTextBlockIndex !== null) {
         this.streamEvents.push({
           type: "content_block_stop",
@@ -265,14 +428,16 @@ class AnthropicStreamCollector {
         type: "content_block_stop",
         index: blockIndex,
       });
-    } else if (this.activeTextBlockIndex !== null) {
-      this.streamEvents.push({
-        type: "content_block_stop",
-        index: this.activeTextBlockIndex,
-      });
-      this.activeTextBlockIndex = null;
+    } else {
+      this.closeThinkingBlock(this.streamEvents);
+      if (this.activeTextBlockIndex !== null) {
+        this.streamEvents.push({
+          type: "content_block_stop",
+          index: this.activeTextBlockIndex,
+        });
+        this.activeTextBlockIndex = null;
+      }
     }
-
     const stopReason = this.bridgedToolUse ? "tool_use" : mapStopReason(response.stopReason);
     this.streamEvents.push({
       type: "message_delta",
@@ -327,6 +492,7 @@ export class AnthropicPromptTranslator implements PromptTranslator {
     sessionId: string;
     model: string;
     enableToolBridge: boolean;
+    includeProgressThinking: boolean;
     initialUsage: ProvisionalStreamUsage;
   }) {
     return new AnthropicStreamCollector(
@@ -334,6 +500,7 @@ export class AnthropicPromptTranslator implements PromptTranslator {
       args.sessionId,
       args.model,
       args.enableToolBridge,
+      args.includeProgressThinking,
       args.initialUsage,
     );
   }
@@ -352,6 +519,7 @@ export class AnthropicPromptTranslator implements PromptTranslator {
       sessionId: args.sessionId,
       model: args.model,
       enableToolBridge: args.enableToolBridge,
+      includeProgressThinking: false,
       initialUsage: args.initialUsage,
     });
     collector.start();
