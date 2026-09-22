@@ -65,6 +65,29 @@ describe("Anthropic ACP facade", () => {
     await server.close();
   });
 
+  it.each(["", "{", '{"stream":true,'])(
+    "returns a client error for malformed JSON: %j",
+    async (raw) => {
+      const response = await fetch(`${baseUrl}/v1/messages`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "anthropic-version": "2023-06-01",
+          "x-api-key": "test-key",
+        },
+        body: raw,
+      });
+      expect(response.status).toBe(400);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      const body = await response.json();
+      expect(body).toMatchObject({
+        type: "error",
+        error: { type: "invalid_request_error", message: "Request body must be valid JSON." },
+        request_id: response.headers.get("request-id"),
+      });
+    },
+  );
+
   it("returns Anthropic-shaped JSON for non-streaming messages and preserves session continuity", async () => {
     const first = await postJson(`${baseUrl}/v1/messages`, {
       model: "mock-sonnet-1",

@@ -1,6 +1,7 @@
 import { Readable, Writable } from "node:stream";
 import { ReadableStream, WritableStream } from "node:stream/web";
 import type { ServerResponse } from "node:http";
+import { HttpError } from "./errors.js";
 
 export function nodeToWebWritable(nodeStream: Writable): WritableStream<Uint8Array> {
   return new WritableStream<Uint8Array>({
@@ -38,7 +39,16 @@ export async function readJsonBody<T>(request: Readable): Promise<T> {
   }
 
   const raw = Buffer.concat(chunks).toString("utf8");
-  return JSON.parse(raw) as T;
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new HttpError({
+      status: 400,
+      type: "invalid_request_error",
+      message: "Request body must be valid JSON.",
+    });
+  }
 }
 
 export function writeJson(response: ServerResponse, status: number, body: unknown): void {
